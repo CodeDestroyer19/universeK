@@ -1,0 +1,13 @@
+{
+  "files.associations": {
+    "stdio.h": "c",
+    "stdlib.h": "c",
+    "mouse.h": "c",
+    "cursor.h": "c",
+    "vga.h": "c",
+    "memory.h": "c",
+    "timer.h": "c",
+    "string.h": "c",
+    "debug.h": "c"
+  }
+}
