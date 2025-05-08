@@ -343,7 +343,19 @@ pub fn init() -> Result<(), KernelError> {
 
 /// Get the next keyboard event, if any
 pub fn get_event() -> Option<KeyEvent> {
-    KEYBOARD.lock().event_queue.pop_front()
+    // Removed SAFE MODE direct port reading logic.
+    // Relies on interrupt handler populating the queue.
+    
+    // Try to get an event from the queue
+    let event = KEYBOARD.lock().event_queue.pop_front();
+    
+    // Log if we're returning an event
+    if let Some(ref e) = event {
+        serial_println!("DEBUG: Keyboard returning event: code={:?}, state={:?}, shift={}, ctrl={}, alt={}", 
+            e.code, e.state, e.shift, e.ctrl, e.alt);
+    }
+    
+    event
 }
 
 /// Wait for a key press and return it

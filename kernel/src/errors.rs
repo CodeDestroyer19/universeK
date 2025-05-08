@@ -34,6 +34,8 @@ pub enum KernelError {
     IsADirectory,
     DirectoryFull,
     InvalidOperation,
+    InitializationFailed,
+    OutOfMemory,
 }
 
 #[derive(Debug)]
@@ -105,6 +107,8 @@ impl KernelError {
             KernelError::IsADirectory => "Is a directory",
             KernelError::DirectoryFull => "Directory full",
             KernelError::InvalidOperation => "Invalid operation",
+            KernelError::InitializationFailed => "Initialization failed",
+            KernelError::OutOfMemory => "Out of memory",
         }
     }
 }
@@ -160,10 +164,14 @@ pub fn validate_interrupt_system() -> Result<(), KernelError> {
 
 /// Validates overall system state before completing initialization
 pub fn perform_system_checks() -> Result<(), KernelError> {
+    serial_println!("DEBUG: errors::perform_system_checks - Start");
     // Run all validation checks
+    serial_println!("DEBUG: errors::perform_system_checks - Calling validate_memory_subsystem()");
     validate_memory_subsystem()?;
+    serial_println!("DEBUG: errors::perform_system_checks - Calling validate_interrupt_system()");
     validate_interrupt_system()?;
-    
+
     // All checks passed
+    serial_println!("DEBUG: errors::perform_system_checks - End (Success)");
     Ok(())
 } 

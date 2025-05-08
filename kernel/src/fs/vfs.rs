@@ -137,6 +137,11 @@ pub trait FileSystem: Send + Sync {
         // Default implementation for filesystems that don't support this operation
         Err(KernelError::NotImplemented)
     }
+    
+    /// Check if this is a TempFS (for emergency operations)
+    fn is_tempfs(&self) -> bool {
+        false
+    }
 }
 
 impl core::fmt::Debug for dyn FileSystem {
@@ -438,8 +443,9 @@ pub fn init() -> Result<(), KernelError> {
 pub fn get_vfs_manager() -> Option<&'static mut VfsManager> {
     unsafe {
         let manager = VFS_MANAGER.as_mut();
-        serial_println!("DEBUG: get_vfs_manager() returning: {}", 
+        serial_println!("DEBUG: get_vfs_manager() returning: {}",
             if manager.is_some() { "Some" } else { "None" });
+            
         manager
     }
 } 

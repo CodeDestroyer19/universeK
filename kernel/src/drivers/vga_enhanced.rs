@@ -307,7 +307,10 @@ lazy_static! {
 
 /// Clear the screen
 pub fn clear_screen() {
-    WRITER.lock().clear_screen();
+    serial_println!("DEBUG: vga_enhanced::clear_screen - Clearing screen");
+    let mut writer = WRITER.lock();
+    writer.clear_screen();
+    serial_println!("DEBUG: vga_enhanced::clear_screen - Screen cleared");
 }
 
 /// Set the text colors
@@ -322,7 +325,9 @@ pub fn get_cursor_position() -> (usize, usize) {
 
 /// Set cursor position
 pub fn set_cursor_position(row: usize, column: usize) {
-    WRITER.lock().set_cursor_position(row, column);
+    serial_println!("DEBUG: vga_enhanced::set_cursor_position - Setting to row={}, col={}", row, column);
+    let mut writer = WRITER.lock();
+    writer.set_cursor_position(row, column);
 }
 
 /// Draw a box on the screen
@@ -332,24 +337,55 @@ pub fn draw_box(x: usize, y: usize, width: usize, height: usize) {
 
 /// Draw a shadowed box
 pub fn draw_shadowed_box(x: usize, y: usize, width: usize, height: usize) {
-    let mut writer = WRITER.lock();
-    writer.draw_shadow(x, y, width, height);
-    writer.draw_box(x, y, width, height);
+    serial_println!("DEBUG: vga_enhanced::draw_shadowed_box - Drawing box at x={}, y={}, width={}, height={}", 
+        x, y, width, height);
+    
+    // Bounds checking to prevent panics
+    if x >= BUFFER_WIDTH || y >= BUFFER_HEIGHT {
+        serial_println!("DEBUG: vga_enhanced::draw_shadowed_box - Starting position out of bounds");
+        return;
+    }
+    
+    if x + width > BUFFER_WIDTH || y + height > BUFFER_HEIGHT {
+        serial_println!("DEBUG: vga_enhanced::draw_shadowed_box - Box extends beyond screen boundaries");
+        // Adjust width and height to fit screen
+        let adj_width = core::cmp::min(BUFFER_WIDTH - x, width);
+        let adj_height = core::cmp::min(BUFFER_HEIGHT - y, height);
+        
+        serial_println!("DEBUG: vga_enhanced::draw_shadowed_box - Adjusted to width={}, height={}", 
+            adj_width, adj_height);
+        
+        let mut writer = WRITER.lock();
+        writer.draw_box(x, y, adj_width, adj_height);
+        writer.draw_shadow(x, y, adj_width, adj_height);
+    } else {
+        let mut writer = WRITER.lock();
+        writer.draw_box(x, y, width, height);
+        writer.draw_shadow(x, y, width, height);
+    }
+    
+    serial_println!("DEBUG: vga_enhanced::draw_shadowed_box - Box drawn successfully");
 }
 
 /// Write a string at a specific position with specific colors
-pub fn write_at(row: usize, column: usize, s: &str, fg: Color, bg: Color) {
+pub fn write_at(row: usize, column: usize, s: &str, fg: Color, bg: Color) {    
+    // Bounds checking
+    if row >= BUFFER_HEIGHT {
+        serial_println!("DEBUG: vga_enhanced::write_at - Row {} out of bounds (max {})", row, BUFFER_HEIGHT-1);
+        return;
+    }
+    
     let mut writer = WRITER.lock();
-    let saved_pos = writer.cursor_position();
+    let saved_position = writer.cursor_position();
     let saved_color = writer.color_code;
     
-    writer.set_cursor_position(row, column);
     writer.set_color(fg, bg);
+    writer.set_cursor_position(row, column);
     writer.write_string(s);
     
     // Restore previous state
-    writer.set_cursor_position(saved_pos.0, saved_pos.1);
     writer.color_code = saved_color;
+    writer.set_cursor_position(saved_position.0, saved_position.1);
 }
 
 /// Create a simple message box with a message
@@ -383,6 +419,11 @@ pub fn init() -> Result<(), KernelError> {
     set_color(Color::LightGray, Color::Black);
     
     Ok(())
+}
+
+/// Set cursor position (alias for set_cursor_position for backward compatibility)
+pub fn set_cursor(row: usize, column: usize) {
+    set_cursor_position(row, column);
 }
 
 #[doc(hidden)]

@@ -76,27 +76,26 @@ pub fn init() {
     serial_println!("Interrupt: System initialized (CPU interrupts still disabled)");
 }
 
-/// Configure the interrupt controllers for normal operation
+/// Configure interrupts for normal operation
+/// (e.g., unmask timer, keyboard)
 pub fn configure_for_operation() {
-    // If we have APIC, use it for timer and disable PIC
+    serial_println!("DEBUG: interrupts::configure_for_operation - Start");
+    // Check if we should use APIC or PIC
     if apic::is_apic_available() {
-        unsafe {
-            // Mask all PIC interrupts
-            pic::PIC_CONTROLLER.configure_irqs(0xFF, 0xFF);
-            
-            // Enable APIC timer with a reasonable initial count
-            apic::enable_timer(10000000); // Arbitrary large number for testing
-            
-            serial_println!("Interrupt: APIC timer enabled, PIC masked");
-        }
+        serial_println!("DEBUG: interrupts::configure_for_operation - Using APIC (currently disabled)");
+        // TODO: Configure APIC timer, IPIs etc.
+        // apic::enable_timer(10_000_000); // Example: Enable timer
     } else {
-        // Fall back to PIC
+        serial_println!("DEBUG: interrupts::configure_for_operation - Using Legacy PIC");
+        // Unmask only the timer and keyboard IRQs for now
+        // PIC IRQs: 0=Timer, 1=Keyboard
         unsafe {
-            // Enable only the timer interrupt from PIC
-            pic::PIC_CONTROLLER.enable_timer_only();
-            serial_println!("Interrupt: PIC timer enabled");
+            // pic::PIC_CONTROLLER.configure_irqs(0b11111100, 0b11111111); // Mask all except Timer (0) and Keyboard (1)
+            serial_println!("DEBUG: interrupts::configure_for_operation - Enabling Timer IRQ only (IRQ 0)");
+            pic::PIC_CONTROLLER.enable_timer_only(); // Enables only IRQ 0
         }
     }
+    serial_println!("DEBUG: interrupts::configure_for_operation - End");
 }
 
 // --- Exception Handlers ---

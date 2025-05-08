@@ -15,22 +15,33 @@ use spin::Mutex;
 /// Initialize the file system subsystem.
 /// This sets up the VFS and mounts the initial file systems.
 pub fn init() -> Result<(), KernelError> {
-    serial_println!("DEBUG: Initializing file system subsystem");
+    serial_println!("DEBUG: Initializing file system subsystem (standard mode)");
     
     // Initialize the Virtual File System
-    vfs::init()?;
-    serial_println!("DEBUG: VFS initialized");
+    // VFS itself should be safe to initialize regardless of mode.
+    match vfs::init() {
+        Ok(_) => serial_println!("DEBUG: VFS initialized"),
+        Err(e) => {
+            serial_println!("DEBUG: CRITICAL: VFS initialization failed: {:?}", e);
+            return Err(e); // VFS is critical
+        }
+    }
     
     // Initialize the file descriptor system
-    fd::init()?;
-    serial_println!("DEBUG: File descriptor system initialized");
+    // FD system should also be safe.
+    match fd::init() {
+        Ok(_) => serial_println!("DEBUG: File descriptor system initialized"),
+        Err(e) => {
+            serial_println!("DEBUG: CRITICAL: File descriptor system initialization failed: {:?}", e);
+            return Err(e); // FD system is also critical
+        }
+    }
     
-    // Try to initialize device-based file system
+    // Try to initialize device-based file system first
+    serial_println!("DEBUG: Attempting to initialize device-based file system.");
     if let Err(e) = init_device_fs() {
-        serial_println!("DEBUG: Device-based file system init failed: {:?}", e);
-        serial_println!("DEBUG: Falling back to RAM-based file system");
-        
-        // Fall back to RAM-based file system
+        serial_println!("DEBUG: Device-based file system init failed: {:?}. Falling back to RAM-based FS.", e);
+        // Fallback uses the non-forcing init_ram_fs
         init_ram_fs()?;
     }
     
@@ -39,10 +50,12 @@ pub fn init() -> Result<(), KernelError> {
 
 /// Initialize a file system based on hardware devices
 fn init_device_fs() -> Result<(), KernelError> {
+    serial_println!("DEBUG: init_device_fs() called.");
     // Check if we have any block devices available
     let block_devices = crate::device::get_block_devices();
     
     if block_devices.is_empty() {
+        serial_println!("DEBUG: No block devices found.");
         return Err(KernelError::DeviceNotFound);
     }
     
@@ -80,35 +93,15 @@ fn init_device_fs() -> Result<(), KernelError> {
 
 /// Initialize a RAM-based file system
 fn init_ram_fs() -> Result<(), KernelError> {
-    use crate::fs::fat::FatFileSystem;
-    use crate::fs::tempfs::TempFs;
-    use crate::fs::ramdisk::RamDisk;
-    
     serial_println!("DEBUG: Initializing RAM-based filesystem");
     
-    // Create a RamDisk
-    serial_println!("DEBUG: Attempting to create RamDisk");
-    let ramdisk = match RamDisk::new() {
-        Ok(disk) => {
-            serial_println!("DEBUG: RamDisk created successfully");
-            disk
-        },
-        Err(e) => {
-            serial_println!("DEBUG: Failed to create RamDisk: {}", e);
-            return Err(KernelError::from(e));
-        }
-    };
+    // Default to TempFS as per original logic
+    let use_tempfs_resolved = true; 
+    serial_println!("DEBUG: RAM-based FS config: Using TempFS: {}", use_tempfs_resolved);
     
-    serial_println!("DEBUG: Created RAM disk with {} blocks of size {} bytes",
-        ramdisk.block_count(), ramdisk.block_size());
-    
-    // Choose which filesystem to use
-    let use_tempfs = true; // Choose which implementation to use
-    
-    if use_tempfs {
+    if use_tempfs_resolved {
         serial_println!("DEBUG: Creating TempFS in-memory filesystem");
-        // Use TempFS (in-memory filesystem)
-        let tempfs = TempFs::new("root");
+        let tempfs = tempfs::TempFs::new("root");
         let fs = Arc::new(Mutex::new(tempfs));
         
         // Mount the TempFS
@@ -146,6 +139,27 @@ fn init_ram_fs() -> Result<(), KernelError> {
         
         serial_println!("DEBUG: RAM filesystem initialization complete");
     } else {
+        // This branch is currently unlikely to be hit due to use_tempfs_resolved logic
+        serial_println!("DEBUG: Creating FAT RamDisk filesystem");
+        use crate::fs::fat::FatFileSystem;
+        use crate::fs::ramdisk::RamDisk;
+        
+        // Create a RamDisk
+        serial_println!("DEBUG: Attempting to create RamDisk for FAT");
+        let ramdisk = match RamDisk::new() {
+            Ok(disk) => {
+                serial_println!("DEBUG: RamDisk created successfully");
+                disk
+            },
+            Err(e) => {
+                serial_println!("DEBUG: Failed to create RamDisk: {}", e);
+                return Err(KernelError::from(e));
+            }
+        };
+        
+        serial_println!("DEBUG: Created RAM disk with {} blocks of size {} bytes",
+            ramdisk.block_count(), ramdisk.block_size());
+        
         // Create a FatFileSystem
         let fatfs = FatFileSystem::new(Arc::new(Mutex::new(ramdisk)))?;
         let fs = Arc::new(Mutex::new(fatfs));
@@ -352,4 +366,35 @@ pub fn direct_read_file(path: &str, buffer: &mut [u8]) -> Result<usize, KernelEr
     }
     
     result
+}
+
+/// Directly create a directory, bypassing the VFS layer
+/// SAFETY: Only for use during initial filesystem setup
+pub fn direct_create_directory(path: &str) -> Result<(), KernelError> {
+    serial_println!("DEBUG: fs::direct_create_directory - Starting for path: {}", path);
+    
+    // Find the global filesystem
+    let fs_opt = unsafe { GLOBAL_FS.as_ref() };
+    let fs = match fs_opt {
+        Some(fs) => fs,
+        None => {
+            serial_println!("DEBUG: fs::direct_create_directory - Global FS not found");
+            return Err(KernelError::NotInitialized);
+        }
+    };
+    
+    // Check if it's a TempFS and use the direct method if available
+    let mut fs_guard = fs.lock();
+    
+    if fs_guard.is_tempfs() {
+        serial_println!("DEBUG: fs::direct_create_directory - Found TempFS, using direct creation");
+        // Convert to TempFS
+        if let Some(tempfs) = tempfs::as_tempfs(&mut *fs_guard) {
+            return tempfs.direct_create_directory(path);
+        }
+    }
+    
+    // Fallback to standard directory creation
+    serial_println!("DEBUG: fs::direct_create_directory - Using standard creation");
+    fs_guard.create_directory(path)
 }
