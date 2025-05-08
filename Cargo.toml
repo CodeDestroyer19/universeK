@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "kernel",
+    "common",
+    # "userland", # Add later when userland crates are defined
+]
+resolver = "2" # Use the edition 2021 resolver
+
+# Remove any remaining [package] or [dependencies] sections from the root
+# as this is now just a workspace definition.

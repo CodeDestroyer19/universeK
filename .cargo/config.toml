@@ -1,0 +1,16 @@
+# in .cargo/config.toml
+
+[unstable]
+# Enable features needed for bootimage runner
+build-std-features = ["compiler-builtins-mem"]
+# Also build the 'alloc' crate
+build-std = ["core", "compiler_builtins", "alloc"]
+
+[build]
+# Use a custom target configuration (path relative to workspace root)
+target = "x86_64-bear_os.json"
+
+# The runner configuration for `cargo run`
+# bootimage knows to apply this when running the kernel target
+[target.'cfg(target_os = "none")']
+runner = ["bootimage", "runner"] 
