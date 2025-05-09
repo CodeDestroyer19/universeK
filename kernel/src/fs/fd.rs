@@ -1,6 +1,5 @@
 use crate::errors::KernelError;
-use crate::fs::vfs::{FileHandle, file_flags};
-use alloc::sync::Arc;
+use crate::fs::vfs::FileHandle;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};

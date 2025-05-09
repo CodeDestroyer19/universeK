@@ -1,6 +1,5 @@
 use super::block_device::{BlockDevice, DEFAULT_BLOCK_SIZE};
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 use crate::serial_println;
 
 // Further reduce the size to minimize memory usage

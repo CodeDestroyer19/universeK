@@ -134,6 +134,13 @@ pub fn init() -> Result<(), KernelError> {
         DEVICE_REGISTRY = Some(Vec::new());
     }
     
+    // Initialize hardware drivers first
+    serial_println!("DEBUG: Initializing hardware drivers through drivers module");
+    if let Err(e) = crate::drivers::init() {
+        serial_println!("DEBUG: Warning: Some driver initialization failed: {:?}", e);
+        // Continue despite driver errors
+    }
+    
     // Initialize and register storage devices
     probe_storage_devices()?;
     

@@ -9,7 +9,6 @@ use x86_64::instructions::port::{Port, PortReadOnly, PortWriteOnly};
 use x86_64::structures::idt::InterruptStackFrame;
 use crate::errors::{KernelError, DeviceError};
 use crate::serial_println;
-use crate::interrupts;
 
 // PS/2 controller ports
 const PS2_DATA_PORT: u16 = 0x60;
@@ -325,18 +324,23 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(
         let scancode = Port::<u8>::new(PS2_DATA_PORT).read();
         KEYBOARD.lock().handle_scancode(scancode);
         
-        // TODO: Implement proper PIC handling
-        // For now, we'll skip sending EOI since we're in safe mode
+        // Send EOI (End of Interrupt) to the PIC
+        crate::interrupts::pic::PIC_CONTROLLER.end_of_interrupt(
+            crate::interrupts::pic::InterruptIndex::Keyboard.as_u8()
+        );
     }
 }
 
 /// Initialize the PS/2 keyboard
 pub fn init() -> Result<(), KernelError> {
-    // Initialize keyboard
+    serial_println!("DEBUG: Initializing PS/2 keyboard");
+    
+    // Initialize keyboard hardware
     KEYBOARD.lock().init()?;
     
-    // TODO: Implement proper interrupt registration
-    // For now, we'll skip registering the handler since we're in safe mode
+    // We don't need to register the interrupt handler here because
+    // it's already set up in the IDT initialization in interrupts/mod.rs
+    serial_println!("DEBUG: PS/2 keyboard initialized successfully");
     
     Ok(())
 }
@@ -367,5 +371,52 @@ pub fn wait_for_key() -> KeyEvent {
             }
         }
         x86_64::instructions::hlt();
+    }
+}
+
+/// Handle a scancode from the keyboard interrupt handler
+/// This function is called directly from the interrupt handler
+pub fn direct_handle_scancode(scancode: u8) {
+    // Write directly to COM1 for debugging
+    unsafe {
+        let com1_data_port: *mut u8 = 0x3F8 as *mut u8;
+        *com1_data_port = b'D'; // D for direct handle
+    }
+    
+    // Use a minimal approach to handle the scancode
+    // Skip locking the keyboard for now to avoid potential deadlocks
+    let is_release = scancode & 0x80 != 0;
+    let key_code = scancode & 0x7F;
+    
+    // Update modifier key states directly without locking
+    match key_code {
+        0x2A | 0x36 => { // LeftShift or RightShift
+            SHIFT_PRESSED.store(!is_release, Ordering::SeqCst);
+        },
+        0x1D => { // LeftControl
+            CTRL_PRESSED.store(!is_release, Ordering::SeqCst);
+        },
+        0x38 => { // LeftAlt
+            ALT_PRESSED.store(!is_release, Ordering::SeqCst);
+        },
+        _ => {}
+    }
+    
+    // Write end marker to COM1
+    unsafe {
+        let com1_data_port: *mut u8 = 0x3F8 as *mut u8;
+        *com1_data_port = b'F'; // F for finished
+    }
+    
+    // Only after the essential processing, try locking the keyboard
+    // to update the event queue if we can do so without blocking
+    let mut try_count = 0;
+    while try_count < 3 {
+        if let Some(mut kb) = KEYBOARD.try_lock() {
+            // Successfully acquired the lock, process normally
+            kb.handle_scancode(scancode);
+            break;
+        }
+        try_count += 1;
     }
 } 

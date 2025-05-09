@@ -195,10 +195,10 @@ impl AtaDevice {
         let lba28_sectors = ((data[60] as u32) | ((data[61] as u32) << 16)) as u64;
         let lba48_sectors = if data[83] & (1 << 10) != 0 {
             // LBA48 supported, use the 48-bit sector count
-            ((data[100] as u64) | 
+            (data[100] as u64) | 
              ((data[101] as u64) << 16) |
              ((data[102] as u64) << 32) |
-             ((data[103] as u64) << 48))
+             ((data[103] as u64) << 48)
         } else {
             0
         };

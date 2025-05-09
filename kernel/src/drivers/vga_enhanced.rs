@@ -426,6 +426,21 @@ pub fn set_cursor(row: usize, column: usize) {
     set_cursor_position(row, column);
 }
 
+/// Read a character from the screen at a specific position
+pub fn read_char_at(row: usize, column: usize) -> char {
+    lazy_static! {
+        static ref WRITER: Mutex<Writer> = Mutex::new(Writer::new());
+    }
+    
+    if row < BUFFER_HEIGHT && column < BUFFER_WIDTH {
+        let writer = WRITER.lock();
+        let screen_char = writer.buffer.chars[row][column].read();
+        (screen_char.ascii_character as char)
+    } else {
+        ' ' // Return space for out-of-bounds access
+    }
+}
+
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;

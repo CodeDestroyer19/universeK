@@ -47,7 +47,11 @@ static mut APIC_AVAILABLE: bool = false;
 
 /// Detect if APIC is available
 pub fn is_apic_available() -> bool {
-    unsafe { APIC_AVAILABLE }
+    // TEMPORARY: Force to false to ensure we use the PIC path
+    return false;
+    
+    // Original code:
+    // unsafe { APIC_AVAILABLE }
 }
 
 /// Initialize the APIC system

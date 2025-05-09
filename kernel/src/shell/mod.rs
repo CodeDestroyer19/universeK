@@ -652,19 +652,49 @@ pub fn run() -> Result<(), KernelError> {
     shell.display_welcome();
     shell.draw_prompt();
     
+    // Indicate we're ready for input
+    {
+        use x86_64::instructions::port::Port;
+        unsafe {
+            let mut port = Port::new(0x3F8);  // COM1 data port
+            port.write(b'S' as u8);  // S for Shell running
+            port.write(b'R' as u8);  // R for Ready
+        }
+    }
+    
     // Main shell loop
     serial_println!("DEBUG: Entering shell input loop");
     let mut loop_count = 0;
+    let mut last_key_time = 0;
+    
     loop {
-        // Poll for keyboard input
-        if let Some(key_event) = crate::drivers::ps2_keyboard::get_event() {
-            serial_println!("DEBUG: Shell received key event: code={:?}, state={:?}", 
-                key_event.code, key_event.state);
-            
-            if shell.handle_key(key_event) {
-                // Exit code (ESC key pressed)
-                serial_println!("DEBUG: Shell exit requested (ESC key)");
-                break;
+        // Safety check - ensure we don't process too many key events too quickly
+        // This prevents potential event queue overflow
+        let now = loop_count;
+        let key_interval = now - last_key_time;
+        
+        if key_interval > 100 { // Only check for keys after some cycles
+            // Poll for keyboard input
+            if let Some(key_event) = crate::drivers::ps2_keyboard::get_event() {
+                last_key_time = now;
+                
+                // Log key event
+                {
+                    use x86_64::instructions::port::Port;
+                    unsafe {
+                        let mut port = Port::new(0x3F8);  // COM1 data port
+                        port.write(b'K' as u8);  // K for Key event
+                    }
+                }
+                
+                serial_println!("DEBUG: Shell received key event: code={:?}, state={:?}", 
+                    key_event.code, key_event.state);
+                
+                if shell.handle_key(key_event) {
+                    // Exit code (ESC key pressed)
+                    serial_println!("DEBUG: Shell exit requested (ESC key)");
+                    break;
+                }
             }
         }
         
@@ -672,11 +702,40 @@ pub fn run() -> Result<(), KernelError> {
         loop_count += 1;
         if loop_count % 10_000_000 == 0 {
             serial_println!("DEBUG: Shell heartbeat: {} iterations", loop_count / 10_000_000);
+            
+            // Direct output heartbeat (in case serial_println isn't working)
+            {
+                use x86_64::instructions::port::Port;
+                unsafe {
+                    let mut port = Port::new(0x3F8);  // COM1 data port
+                    port.write(b'H' as u8);  // H for Heartbeat
+                }
+            }
         }
         
-        // Small delay to reduce CPU usage
-        for _ in 0..100 {
-            // Spin
+        // Check if we haven't received any key events for a long time
+        // This helps detect if the keyboard interrupt handler is not working
+        if loop_count > 100_000_000 && last_key_time == 0 {
+            serial_println!("WARNING: No keyboard events received after long wait");
+            serial_println!("WARNING: Keyboard interrupts may not be working properly");
+            
+            // Output direct warning
+            {
+                use x86_64::instructions::port::Port;
+                unsafe {
+                    let mut port = Port::new(0x3F8);  // COM1 data port
+                    port.write(b'W' as u8);  // W for Warning
+                    port.write(b'K' as u8);  // K for Keyboard
+                }
+            }
+            
+            // Continue anyway - don't break the loop
+        }
+        
+        // Use CPU's HLT instruction to pause until the next interrupt
+        // This saves power and CPU cycles
+        if loop_count % 1000 == 0 {
+            x86_64::instructions::hlt();
         }
     }
     

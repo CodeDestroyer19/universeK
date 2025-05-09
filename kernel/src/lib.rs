@@ -22,9 +22,9 @@ pub mod user; // User management module
 pub mod shell; // Shell/terminal functionality
 pub mod logger; // Logging system
 pub mod config; // Configuration management
+pub mod gui; // GUI subsystem
 
 use alloc::format;
-use alloc::string::ToString;
 use bootloader::BootInfo;
 use x86_64::VirtAddr;
 use memory::BootInfoFrameAllocator;
@@ -39,6 +39,7 @@ enum InitPhase {
     FinalChecks,  // Phase 5 (Moved User Setup from here)
     Filesystem,   // Phase 6 (New Position)
     UserSetup,    // Phase 7 (New Position)
+    GuiSetup,     // Phase 8 (New for GUI)
     Complete,     // Final Phase
 }
 
@@ -129,6 +130,15 @@ pub fn init(boot_info: &'static BootInfo) {
     }
     serial_println!("DEBUG: [INIT Phase {:?}] Complete", phase);
 
+    // ===== PHASE 8: GUI Setup (NEW) =====
+    let phase = InitPhase::GuiSetup;
+    serial_println!("DEBUG: [INIT Phase {:?}] Initializing GUI subsystem", phase);
+    match gui::init() {
+        Ok(_) => serial_println!("DEBUG: GUI subsystem initialized successfully"),
+        Err(e) => serial_println!("DEBUG: Warning: GUI initialization failed: {:?}", e),
+    }
+    serial_println!("DEBUG: [INIT Phase {:?}] Complete", phase);
+
     // ===== COMPLETE =====
     let phase = InitPhase::Complete;
     serial_println!("DEBUG: [INIT Phase {:?}] Kernel initialization complete", phase);
@@ -143,42 +153,31 @@ pub fn init(boot_info: &'static BootInfo) {
         logger::warning("kernel", "File system: Not initialized");
     }
 
-    // --- Start Shell or Main Loop ---
-    // (Removed safe_mode block)
+    // Enable CPU interrupts - this allows the configured device IRQs to be processed
+    serial_println!("DEBUG: About to enable CPU interrupts");
+    
+    // First, make sure all interrupts are masked to be safe
+    unsafe {
+        // This only sets the masks - it doesn't re-initialize the PICs
+        interrupts::pic::PIC_CONTROLLER.configure_irqs(0b11111111, 0b11111111);
+    }
+    
+    // Simplest possible approach - just enable CPU interrupts without unmasking any IRQs
+    x86_64::instructions::interrupts::enable();
+    serial_println!("DEBUG: CPU interrupts enabled (but all IRQs still masked)");
+    
+    // Now we'll skip interrupt handling entirely for now to get the system working
+    serial_println!("DEBUG: Leaving all IRQs masked for stability - no keyboard/timer interrupts");
+    serial_println!("DEBUG: Continuing with GUI initialization");
 
-    // Initialize the shell
-    serial_println!("DEBUG: Beginning shell initialization");
-    if let Err(e) = shell::init() {
-        serial_println!("ERROR: Failed to initialize shell: {:?}", e);
-        // Optionally draw error on screen
-        drivers::vga_enhanced::write_at(16, 20, "Shell initialization failed!", 
-            drivers::vga_enhanced::Color::Red, 
-            drivers::vga_enhanced::Color::Black);
-        // If shell fails, halt
-        hlt_loop();
-    } else {
-        serial_println!("DEBUG: Shell initialized successfully");
-        // Optionally draw ready message
-        drivers::vga_enhanced::write_at(16, 20, "Shell Ready - Starting...", 
-            drivers::vga_enhanced::Color::Green, 
-            drivers::vga_enhanced::Color::Black);
-        
-        // Run the shell (this will block until the user exits)
-        serial_println!("DEBUG: Attempting to run shell...");
-        match shell::run() {
-            Ok(_) => serial_println!("DEBUG: Shell exited normally"),
-            Err(e) => serial_println!("ERROR: Error running shell: {:?}", e),
-        }
-        // If shell exits, fall through to main loop or halt
-        serial_println!("DEBUG: Shell finished or failed. Entering main loop.");
+    // Start the GUI (which includes shell window)
+    serial_println!("DEBUG: Starting GUI");
+    match gui::run() {
+        Ok(_) => serial_println!("DEBUG: GUI exited normally"),
+        Err(e) => serial_println!("ERROR: Error running GUI: {:?}", e),
     }
 
-    // Enable CPU interrupts - this allows the configured device IRQs to be processed
-    serial_println!("DEBUG: Enabling CPU interrupts");
-    x86_64::instructions::interrupts::enable();
-    serial_println!("DEBUG: CPU interrupts enabled successfully");
-
-    // Enter the kernel main loop
+    // GUI has exited, so enter the kernel main loop
     serial_println!("DEBUG: Entering kernel main loop");
     let mut counter = 0;
     loop {
@@ -188,13 +187,6 @@ pub fn init(boot_info: &'static BootInfo) {
         }
         x86_64::instructions::hlt(); // Wait for the next interrupt
     }
-
-    // We should never reach here unless shell exits and we don't loop
-    // #[allow(unreachable_code)]
-    // {
-    //     serial_println!("DEBUG: WARNING: Kernel main loop exited unexpectedly. Halting.");
-    //     hlt_loop();
-    // }
 }
 
 /// Basic halt loop

@@ -6,7 +6,6 @@ pub mod welcome; // Welcome screen module
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloc::vec;
 use spin::Mutex;
 use lazy_static::lazy_static;
 use crate::errors::KernelError;

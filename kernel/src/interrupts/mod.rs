@@ -10,9 +10,23 @@ use crate::{println, serial_print, serial_println, hlt_loop};
 use crate::gdt;
 use lazy_static::lazy_static;
 use pic::InterruptIndex;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 // Re-export PIC controller for convenience
 pub use pic::PIC_CONTROLLER;
+
+// A counter to track the number of timer interrupts
+static TIMER_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Safely write a single character to the serial port (COM1)
+/// This function checks if the transmitter is ready before writing
+unsafe fn safe_serial_write(c: u8) {
+    let com1_lsr_port: *mut u8 = 0x3FD as *mut u8;
+    if (*com1_lsr_port & 0x20) != 0 {  // Check if transmitter holding register is empty
+        let com1_data_port: *mut u8 = 0x3F8 as *mut u8;
+        *com1_data_port = c;
+    }
+}
 
 lazy_static! {
     // Create an IDT instance. It must be 'static because the CPU needs
@@ -35,6 +49,7 @@ lazy_static! {
         // Add PIC interrupt handlers
         idt[InterruptIndex::Timer.as_usize()].set_handler_fn(timer_interrupt_handler);
         idt[InterruptIndex::Keyboard.as_usize()].set_handler_fn(keyboard_interrupt_handler);
+        idt[InterruptIndex::Mouse.as_usize()].set_handler_fn(crate::drivers::ps2_mouse::mouse_interrupt_handler);
         
         // Add APIC timer handler (uses the same vector as PIC timer)
         // This allows us to handle timer interrupts whether they come from PIC or APIC
@@ -61,8 +76,18 @@ pub fn init() {
     // Initialize and mask the PICs
     unsafe {
         serial_println!("Interrupt: Initializing PICs");
-        // Get a direct reference in this limited initialization scope
+        
+        // First disable CPU interrupts during initialization
+        x86_64::instructions::interrupts::disable();
+        serial_println!("Interrupt: CPU interrupts disabled during initialization");
+        
+        // Initialize PICs
         pic::PIC_CONTROLLER.initialize();
+        serial_println!("Interrupt: PICs initialized, all IRQs masked");
+        
+        // Make doubly sure all interrupts are masked
+        pic::PIC_CONTROLLER.configure_irqs(0xFF, 0xFF);
+        serial_println!("Interrupt: Double-checked IRQ masking");
     }
     
     // Try to initialize APIC if available
@@ -80,22 +105,13 @@ pub fn init() {
 /// (e.g., unmask timer, keyboard)
 pub fn configure_for_operation() {
     serial_println!("DEBUG: interrupts::configure_for_operation - Start");
-    // Check if we should use APIC or PIC
-    if apic::is_apic_available() {
-        serial_println!("DEBUG: interrupts::configure_for_operation - Using APIC (currently disabled)");
-        // TODO: Configure APIC timer, IPIs etc.
-        // apic::enable_timer(10_000_000); // Example: Enable timer
-    } else {
-        serial_println!("DEBUG: interrupts::configure_for_operation - Using Legacy PIC");
-        // Unmask only the timer and keyboard IRQs for now
-        // PIC IRQs: 0=Timer, 1=Keyboard
-        unsafe {
-            // pic::PIC_CONTROLLER.configure_irqs(0b11111100, 0b11111111); // Mask all except Timer (0) and Keyboard (1)
-            serial_println!("DEBUG: interrupts::configure_for_operation - Enabling Timer IRQ only (IRQ 0)");
-            pic::PIC_CONTROLLER.enable_timer_only(); // Enables only IRQ 0
-        }
+    // For now, we'll just mask all interrupts to ensure stability
+    // We can re-enable them once we have a stable system
+    unsafe {
+        serial_println!("DEBUG: interrupts::configure_for_operation - Masking ALL interrupts for stability");
+        pic::PIC_CONTROLLER.configure_irqs(0b11111111, 0b11111111); // All masked
     }
-    serial_println!("DEBUG: interrupts::configure_for_operation - End");
+    serial_println!("DEBUG: interrupts::configure_for_operation - End (all IRQs masked)");
 }
 
 // --- Exception Handlers ---
@@ -128,25 +144,23 @@ extern "x86-interrupt" fn page_fault_handler(
 
 // PIC Timer interrupt handler
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // Ultra minimal handler - just print a dot to show timer interrupts
+    // Ultra-minimal handler as a last resort
     unsafe {
-        // Write directly to COM1 port (0x3F8) - a single '.' character
-        let com1_data_port: *mut u8 = 0x3F8 as *mut u8;
-        *com1_data_port = b'.';
-        
-        // Send EOI to PIC directly
+        // 1. Directly write EOI to master PIC command port
         let master_cmd_port: *mut u8 = 0x20 as *mut u8;
-        *master_cmd_port = 0x20; // EOI command
+        *master_cmd_port = 0x20; // EOI command directly to PIC
+        
+        // 2. No other operations that could potentially fail
+        // Note: We're deliberately avoiding using the more complex EOI methods
+        //       since they might be the source of the issue
     }
 }
 
 // APIC Timer interrupt handler
 extern "x86-interrupt" fn apic_timer_handler(_stack_frame: InterruptStackFrame) {
-    // Do the same as the APIC timer handler but don't call it directly
     unsafe {
-        // Write directly to COM1 port for debugging
-        let com1_data_port: *mut u8 = 0x3F8 as *mut u8;
-        *com1_data_port = b'A'; // 'A' for APIC timer
+        // Write 'A' to show APIC timer interrupts
+        safe_serial_write(b'A');
         
         // Send EOI to APIC
         apic::send_eoi();
@@ -154,32 +168,31 @@ extern "x86-interrupt" fn apic_timer_handler(_stack_frame: InterruptStackFrame) 
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
-    use spin::Mutex;
-    use x86_64::instructions::port::Port;
-
-    lazy_static! {
-        static ref KEYBOARD: Mutex<Keyboard<layouts::Us104Key, ScancodeSet1>> = 
-            Mutex::new(Keyboard::new(layouts::Us104Key, ScancodeSet1,
-                HandleControl::Ignore)
-            );
-    }
-
-    let mut keyboard = KEYBOARD.lock();
-    let mut port = Port::new(0x60); // PS/2 keyboard data port
-
-    let scancode: u8 = unsafe { port.read() };
-    if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
-        if let Some(key) = keyboard.process_keyevent(key_event) {
-            match key {
-                DecodedKey::Unicode(character) => serial_print!("{}", character),
-                DecodedKey::RawKey(key) => serial_print!("{:?}", key),
-            }
-        }
-    }
-
-    // Send EOI
     unsafe {
-        pic::PIC_CONTROLLER.end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+        // Write a direct indicator that the keyboard handler is starting
+        safe_serial_write(b'K');
+        safe_serial_write(b'1');
+        
+        // Read scancode directly, with minimal operations
+        let keyboard_port = 0x60 as *mut u8;
+        let scancode: u8 = *keyboard_port;
+        
+        // Simple debugging - write scancode to COM1 as hex digits
+        let hex_chars = b"0123456789ABCDEF";
+        safe_serial_write(hex_chars[(scancode >> 4) as usize]);
+        safe_serial_write(hex_chars[(scancode & 0xF) as usize]);
+        
+        // Minimal processing - just call direct handler
+        crate::drivers::ps2_keyboard::direct_handle_scancode(scancode);
+        
+        // Write a direct indicator before EOI
+        safe_serial_write(b'E');
+        
+        // Send EOI directly to the PIC
+        let pic_cmd = 0x20 as *mut u8;
+        *pic_cmd = 0x20; // EOI command
+        
+        // Final indicator that handler completed
+        safe_serial_write(b'2');
     }
 } 

@@ -5,9 +5,8 @@ use spin::Mutex;
 use lazy_static::lazy_static;
 use x86_64::instructions::port::{Port, PortWriteOnly};
 use x86_64::structures::idt::InterruptStackFrame;
-use crate::errors::{KernelError, DeviceError};
+use crate::errors::KernelError;
 use crate::serial_println;
-use crate::interrupts;
 
 // PIT ports
 const PIT_CHANNEL0: u16 = 0x40;  // Channel 0 data port

@@ -17,6 +17,10 @@ pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 pub enum InterruptIndex {
     Timer = PIC_1_OFFSET,      // IRQ 0
     Keyboard = PIC_1_OFFSET + 1, // IRQ 1
+    // IRQs 2-7 on the master PIC
+    
+    // IRQs 8-15 on the slave PIC, add 8 to the offset
+    Mouse = PIC_1_OFFSET + 12, // IRQ 12
     // Add other PIC interrupts as needed
 }
 
@@ -170,6 +174,17 @@ impl PicController {
             let mut master_cmd: Port<u8> = Port::new(0x20);
             master_cmd.write(0x20);
         }
+    }
+
+    /// Send End of Interrupt directly to the ChainedPics implementation
+    /// This bypasses any potential issues with our custom EOI code
+    pub unsafe fn direct_eoi_for_timer(&self) {
+        // Access the ChainedPics directly
+        let mut pics = self.pics.lock();
+        
+        // ChainedPics has a notify_end_of_interrupt method we can use
+        // for timer IRQ0 -> vector 32 (PIC_1_OFFSET)
+        pics.notify_end_of_interrupt(PIC_1_OFFSET);
     }
 }
 

@@ -5,7 +5,6 @@ use alloc::format;
 use crate::alloc::string::ToString;
 use crate::drivers::vga_enhanced::{self, Color};
 use crate::user;
-use crate::serial_println;
 use crate::errors::KernelError;
 use crate::fs;
 

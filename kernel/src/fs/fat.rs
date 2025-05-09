@@ -3,7 +3,7 @@ use crate::fs::vfs::{FileSystem, FileHandle, Metadata, DirEntry, NodeType};
 use crate::fs::block_device::BlockDevice;
 use alloc::vec::Vec;
 use alloc::vec;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::sync::Arc;
 use spin::Mutex;
 use core::mem::size_of;

@@ -6,11 +6,9 @@ use alloc::collections::VecDeque;
 use spin::Mutex;
 use lazy_static::lazy_static;
 use x86_64::instructions::port::{Port, PortReadOnly, PortWriteOnly};
-use x86_64::structures;
 use x86_64::structures::idt::InterruptStackFrame;
 use crate::errors::{KernelError, DeviceError};
 use crate::serial_println;
-use crate::interrupts;
 
 // PS/2 controller ports
 const PS2_DATA_PORT: u16 = 0x60;
@@ -80,10 +78,37 @@ impl MouseState {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct MouseButtons {
+    pub left: bool,
+    pub right: bool,
+    pub middle: bool,
+}
+
+impl MouseButtons {
+    pub fn new() -> Self {
+        Self {
+            left: false,
+            right: false,
+            middle: false,
+        }
+    }
+    
+    pub fn from_bits(bits: u8) -> Self {
+        Self {
+            left: (bits & MOUSE_LEFT_BUTTON) != 0,
+            right: (bits & MOUSE_RIGHT_BUTTON) != 0,
+            middle: (bits & MOUSE_MIDDLE_BUTTON) != 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct MouseEvent {
-    pub state: MouseState,
+    pub x: i16,
+    pub y: i16,
     pub dx: i8,
     pub dy: i8,
+    pub buttons: MouseButtons,
 }
 
 // Global mouse state
@@ -233,58 +258,49 @@ impl Mouse {
     }
     
     fn handle_packet(&mut self) {
-        // Verify first packet byte (should have bit 3 set)
-        if (self.packet[0] & 0x08) == 0 {
-            serial_println!("Invalid mouse packet");
-            return;
-        }
-        
-        // Extract button state
+        // Extract movement and button information from the packet
         let buttons = self.packet[0] & 0x07;
         
-        // Extract X/Y movement
+        // Process X movement
         let mut dx = self.packet[1] as i8;
-        let mut dy = self.packet[2] as i8;
-        
-        // Handle sign extension for X movement
         if self.packet[0] & MOUSE_X_SIGN != 0 {
-            dx = -(((!self.packet[1] as u8) + 1) as i8);
+            // X sign bit is set (negative movement)
+            if dx > 0 {
+                dx = -128 + (dx as i16 - 128) as i8;
+            }
         }
         
-        // Handle sign extension for Y movement (inverted Y axis)
+        // Process Y movement (inverted for screen coordinates)
+        let mut dy = -(self.packet[2] as i8);
         if self.packet[0] & MOUSE_Y_SIGN != 0 {
-            dy = -(((!self.packet[2] as u8) + 1) as i8);
+            // Y sign bit is set (negative movement)
+            if dy < 0 {
+                dy = -(dy as i16 as i8);
+            } else {
+                dy = -dy;
+            }
         }
-        
-        // Invert Y axis to match screen coordinates (up is negative)
-        dy = -dy;
         
         // Update mouse state
         self.state.buttons = buttons;
+        self.state.x = (self.state.x + dx as i16).max(0).min(640);
+        self.state.y = (self.state.y + dy as i16).max(0).min(400);
         
-        // Limit mouse coordinates to screen boundaries (assuming 80x25 text mode)
-        let new_x = self.state.x + dx as i16;
-        self.state.x = new_x.clamp(0, 79);
-        
-        let new_y = self.state.y + dy as i16;
-        self.state.y = new_y.clamp(0, 24);
-        
-        // Create mouse event
+        // Create a mouse event
         let event = MouseEvent {
-            state: self.state,
+            x: self.state.x,
+            y: self.state.y,
             dx,
             dy,
+            buttons: MouseButtons::from_bits(buttons),
         };
         
-        // Add to event queue
+        // Add to the event queue if there's space
         if self.event_queue.len() < 16 {
             self.event_queue.push_back(event);
         }
         
-        // Debug output for mouse events
-        if dx != 0 || dy != 0 || buttons != 0 {
-            serial_println!("Mouse: x={}, y={}, buttons={:08b}", self.state.x, self.state.y, buttons);
-        }
+        serial_println!("Mouse: x={}, y={}, buttons={:01b}", self.state.x, self.state.y, self.state.buttons);
     }
     
     fn handle_data(&mut self, data: u8) {
@@ -307,9 +323,10 @@ pub extern "x86-interrupt" fn mouse_interrupt_handler(
             let data = Port::<u8>::new(PS2_DATA_PORT).read();
             MOUSE.lock().handle_data(data);
             
-            // Send End of Interrupt
-            // TODO: Implement proper PIC handling
-            // For now, we'll skip sending EOI since we're in safe mode
+            // Send End of Interrupt to the PIC
+            crate::interrupts::pic::PIC_CONTROLLER.end_of_interrupt(
+                crate::interrupts::pic::InterruptIndex::Mouse.as_u8()
+            );
         }
     }
 }
@@ -331,6 +348,11 @@ pub fn init() -> Result<(), KernelError> {
 
 /// Get the next mouse event, if any
 pub fn get_event() -> Option<MouseEvent> {
+    if !MOUSE_INITIALIZED.load(Ordering::SeqCst) {
+        return None;
+    }
+    
+    // Get an event from the queue
     MOUSE.lock().event_queue.pop_front()
 }
 
@@ -355,4 +377,4 @@ pub fn draw_cursor() {
             crate::drivers::vga_enhanced::Color::Black
         );
     }
-} 
+}
