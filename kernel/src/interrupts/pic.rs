@@ -2,14 +2,27 @@
 //! PIC (Programmable Interrupt Controller) management
 //! This module provides a clean interface for initializing and configuring the 8259A PICs.
 
-use pic8259::ChainedPics;
 use spin::Mutex;
 use crate::serial_println;
+use x86_64::instructions::port::Port;
 
-/// The base vector offset for PIC1 (master)
+/// The PICs are configured to use these offsets for their IRQs
 pub const PIC_1_OFFSET: u8 = 32;
-/// The base vector offset for PIC2 (slave)
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
+
+/// Command and data ports for the PICs
+const PIC_1_COMMAND: u16 = 0x20;
+const PIC_1_DATA: u16 = 0x21;
+const PIC_2_COMMAND: u16 = 0xA0;
+const PIC_2_DATA: u16 = 0xA1;
+
+/// PIC initialization command words
+const ICW1_INIT: u8 = 0x10;
+const ICW1_ICW4: u8 = 0x01;
+const ICW4_8086: u8 = 0x01;
+
+/// PIC end of interrupt command
+const PIC_EOI: u8 = 0x20;
 
 /// Represents interrupt vectors corresponding to PIC IRQs
 #[derive(Debug, Clone, Copy)]
@@ -36,157 +49,95 @@ impl InterruptIndex {
     }
 }
 
-/// Manages the 8259 Programmable Interrupt Controllers
+/// A structure representing the PIC controller
 pub struct PicController {
-    pics: Mutex<ChainedPics>,
-    initialized: bool,
+    primary_offset: u8,
+    secondary_offset: u8,
 }
 
 impl PicController {
-    /// Create a new PIC controller (not initialized yet)
-    pub const fn new() -> Self {
+    /// Creates a new PIC controller with the given offsets
+    pub const fn new(primary_offset: u8, secondary_offset: u8) -> Self {
         Self {
-            pics: Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) }),
-            initialized: false,
+            primary_offset,
+            secondary_offset,
         }
     }
 
-    /// Initialize the PICs and mask all interrupts
-    /// This is the primary initialization function that should be called once during boot
+    /// Initializes the PICs with the configured offsets
     pub fn initialize(&mut self) {
-        serial_println!("PIC: Starting initialization sequence");
-        
-        // Use direct port I/O for maximum control over the initialization sequence
-        use x86_64::instructions::port::Port;
-        
-        // PIC1 (Master) ports
-        let mut master_cmd: Port<u8> = Port::new(0x20);
-        let mut master_data: Port<u8> = Port::new(0x21);
-        
-        // PIC2 (Slave) ports
-        let mut slave_cmd: Port<u8> = Port::new(0xA0);
-        let mut slave_data: Port<u8> = Port::new(0xA1);
-        
-        // Function to add a small delay between I/O operations
-        // The x86_64 crate doesn't seem to have io_wait, so we implement it manually
-        fn io_wait() {
-            // Write to the POST port (0x80) which should take long enough for PIC operations
-            let mut wait_port: Port<u8> = Port::new(0x80);
-            unsafe { wait_port.write(0) };
-        }
-        
-        // The initialization command sequence for each PIC
+        serial_println!("Initializing PICs with offsets: primary={}, secondary={}", 
+            self.primary_offset, self.secondary_offset);
+
+        // Save current masks
+        let primary_mask: u8 = unsafe { Port::new(PIC_1_DATA).read() };
+        let secondary_mask: u8 = unsafe { Port::new(PIC_2_DATA).read() };
+        serial_println!("DEBUG: Saved PIC masks - Primary: {:08b}, Secondary: {:08b}", 
+            primary_mask, secondary_mask);
+
+        // Start initialization sequence
         unsafe {
-            // Start by masking all interrupts
-            master_data.write(0xFF);
-            io_wait();
-            slave_data.write(0xFF);
-            io_wait();
-            
-            // ICW1: Start initialization sequence in cascade mode
-            master_cmd.write(0x11);
-            io_wait();
-            slave_cmd.write(0x11);
-            io_wait();
-            
+            // ICW1: Start initialization sequence
+            Port::new(PIC_1_COMMAND).write(ICW1_INIT | ICW1_ICW4);
+            Port::new(PIC_2_COMMAND).write(ICW1_INIT | ICW1_ICW4);
+
             // ICW2: Set vector offsets
-            master_data.write(PIC_1_OFFSET);
-            io_wait();
-            slave_data.write(PIC_2_OFFSET);
-            io_wait();
-            
-            // ICW3: Tell Master PIC that there is a slave PIC at IRQ2 (0000 0100)
-            master_data.write(4);
-            io_wait();
-            
-            // ICW3: Tell Slave PIC its cascade identity (0000 0010)
-            slave_data.write(2);
-            io_wait();
-            
-            // ICW4: Set 8086 mode (not Auto EOI)
-            master_data.write(0x01);
-            io_wait();
-            slave_data.write(0x01);
-            io_wait();
-            
-            // Make sure all interrupts are masked
-            master_data.write(0xFF);
-            io_wait();
-            slave_data.write(0xFF);
-            io_wait();
+            Port::new(PIC_1_DATA).write(self.primary_offset);
+            Port::new(PIC_2_DATA).write(self.secondary_offset);
+
+            // ICW3: Tell PICs how they're cascaded
+            Port::new(PIC_1_DATA).write(4u8); // Secondary PIC at IRQ2
+            Port::new(PIC_2_DATA).write(2u8); // Cascade identity
+
+            // ICW4: Set 8086 mode
+            Port::new(PIC_1_DATA).write(ICW4_8086);
+            Port::new(PIC_2_DATA).write(ICW4_8086);
+
+            // Mask all interrupts initially
+            Port::new(PIC_1_DATA).write(0xFFu8);
+            Port::new(PIC_2_DATA).write(0xFFu8);
         }
-        
-        serial_println!("PIC: Direct initialization complete, all IRQs masked");
-        self.initialized = true;
+
+        serial_println!("PIC initialization complete");
     }
 
-    /// Configure IRQ masks to enable specific interrupts
-    /// 
-    /// # Safety
-    /// This function should only be called after initialize() and before enabling
-    /// CPU interrupts with STI. The PICs should be in a properly initialized state.
-    pub unsafe fn configure_irqs(&self, primary_mask: u8, secondary_mask: u8) {
-        if !self.initialized {
-            serial_println!("WARNING: Attempting to configure PIC IRQs before initialization!");
-            return;
+    /// Configures which IRQs are enabled/disabled
+    pub fn configure_irqs(&mut self, primary_mask: u8, secondary_mask: u8) {
+        serial_println!("Configuring IRQs - Primary mask: {:08b}, Secondary mask: {:08b}", 
+            primary_mask, secondary_mask);
+            
+        unsafe {
+            // Ensure we're not enabling any interrupts that aren't properly set up
+            let safe_primary_mask = primary_mask & 0xFCu8; // Only allow IRQ0 (timer) and IRQ1 (keyboard)
+            let safe_secondary_mask = secondary_mask & 0xEFu8; // Only allow IRQ12 (mouse)
+            
+            // Write the masks
+            Port::new(PIC_1_DATA).write(safe_primary_mask);
+            Port::new(PIC_2_DATA).write(safe_secondary_mask);
+            
+            // Verify the masks were written correctly
+            let verify_primary: u8 = unsafe { Port::new(PIC_1_DATA).read() };
+            let verify_secondary: u8 = unsafe { Port::new(PIC_2_DATA).read() };
+            
+            serial_println!("IRQs configured - Primary: {:08b}, Secondary: {:08b}", 
+                safe_primary_mask, safe_secondary_mask);
+            serial_println!("Verified masks - Primary: {:08b}, Secondary: {:08b}", 
+                verify_primary, verify_secondary);
         }
-        
-        serial_println!("PIC: Setting IRQ masks: Primary={:#08b}, Secondary={:#08b}", 
-                       primary_mask, secondary_mask);
-        self.pics.lock().write_masks(primary_mask, secondary_mask);
     }
 
-    /// Enable only the timer interrupt (IRQ0)
-    /// A convenience method for the common case of wanting just the timer
-    /// 
-    /// # Safety
-    /// Same safety requirements as configure_irqs
-    pub unsafe fn enable_timer_only(&self) {
-        // 0xFE = 1111 1110 - Only IRQ0 (Timer) unmasked
-        // 0xFF = 1111 1111 - All IRQs on secondary PIC masked
-        self.configure_irqs(0xFE, 0xFF);
-    }
-
-    /// Notify end of interrupt for the specified IRQ
-    /// 
-    /// # Safety
-    /// This should only be called from an interrupt handler for the specified IRQ
-    pub unsafe fn end_of_interrupt(&self, interrupt_id: u8) {
-        // Use direct port I/O for maximum control
-        use x86_64::instructions::port::Port;
-        
-        // Convert interrupt vector back to IRQ number
-        let irq = interrupt_id - PIC_1_OFFSET;
-        
-        // Send the EOI command to the appropriate PIC(s)
+    /// Sends an end of interrupt signal for the given IRQ
+    pub fn notify_end_of_interrupt(&mut self, irq: u8) {
         if irq >= 8 {
-            // For IRQs 8-15, must send EOI to both slave and master PICs
-            let mut slave_cmd: Port<u8> = Port::new(0xA0);
-            let mut master_cmd: Port<u8> = Port::new(0x20);
-            
-            // Send EOI to slave PIC
-            slave_cmd.write(0x20);
-            
-            // Also send EOI to master PIC (for the cascade IRQ)
-            master_cmd.write(0x20);
-        } else {
-            // For IRQs 0-7, only send EOI to master PIC
-            let mut master_cmd: Port<u8> = Port::new(0x20);
-            master_cmd.write(0x20);
+            unsafe {
+                Port::new(PIC_2_COMMAND).write(PIC_EOI);
+            }
         }
-    }
-
-    /// Send End of Interrupt directly to the ChainedPics implementation
-    /// This bypasses any potential issues with our custom EOI code
-    pub unsafe fn direct_eoi_for_timer(&self) {
-        // Access the ChainedPics directly
-        let mut pics = self.pics.lock();
-        
-        // ChainedPics has a notify_end_of_interrupt method we can use
-        // for timer IRQ0 -> vector 32 (PIC_1_OFFSET)
-        pics.notify_end_of_interrupt(PIC_1_OFFSET);
+        unsafe {
+            Port::new(PIC_1_COMMAND).write(PIC_EOI);
+        }
     }
 }
 
-// Create a global instance of the PIC controller
-pub static mut PIC_CONTROLLER: PicController = PicController::new(); 
+/// Global PIC controller instance
+pub static PIC_CONTROLLER: Mutex<PicController> = Mutex::new(PicController::new(PIC_1_OFFSET, PIC_2_OFFSET)); 

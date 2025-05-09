@@ -323,8 +323,8 @@ pub extern "x86-interrupt" fn mouse_interrupt_handler(
             let data = Port::<u8>::new(PS2_DATA_PORT).read();
             MOUSE.lock().handle_data(data);
             
-            // Send End of Interrupt to the PIC
-            crate::interrupts::pic::PIC_CONTROLLER.end_of_interrupt(
+            // Send EOI to PIC
+            crate::interrupts::pic::PIC_CONTROLLER.lock().notify_end_of_interrupt(
                 crate::interrupts::pic::InterruptIndex::Mouse.as_u8()
             );
         }

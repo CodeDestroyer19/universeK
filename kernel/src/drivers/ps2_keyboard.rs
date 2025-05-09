@@ -324,8 +324,8 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(
         let scancode = Port::<u8>::new(PS2_DATA_PORT).read();
         KEYBOARD.lock().handle_scancode(scancode);
         
-        // Send EOI (End of Interrupt) to the PIC
-        crate::interrupts::pic::PIC_CONTROLLER.end_of_interrupt(
+        // Send EOI to PIC
+        crate::interrupts::pic::PIC_CONTROLLER.lock().notify_end_of_interrupt(
             crate::interrupts::pic::InterruptIndex::Keyboard.as_u8()
         );
     }

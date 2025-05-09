@@ -11,6 +11,8 @@ use crate::gdt;
 use lazy_static::lazy_static;
 use pic::InterruptIndex;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
+use spin::Mutex;
 
 // Re-export PIC controller for convenience
 pub use pic::PIC_CONTROLLER;
@@ -61,6 +63,15 @@ lazy_static! {
     };
 }
 
+lazy_static! {
+    static ref KEYBOARD: Mutex<Keyboard<layouts::Us104Key, ScancodeSet1>> =
+        Mutex::new(Keyboard::new(
+            layouts::Us104Key,
+            ScancodeSet1,
+            HandleControl::Ignore
+        ));
+}
+
 /// Initializes the interrupt system
 /// 
 /// This function:
@@ -82,11 +93,11 @@ pub fn init() {
         serial_println!("Interrupt: CPU interrupts disabled during initialization");
         
         // Initialize PICs
-        pic::PIC_CONTROLLER.initialize();
+        pic::PIC_CONTROLLER.lock().initialize();
         serial_println!("Interrupt: PICs initialized, all IRQs masked");
         
         // Make doubly sure all interrupts are masked
-        pic::PIC_CONTROLLER.configure_irqs(0xFF, 0xFF);
+        pic::PIC_CONTROLLER.lock().configure_irqs(0xFF, 0xFF);
         serial_println!("Interrupt: Double-checked IRQ masking");
     }
     
@@ -109,9 +120,16 @@ pub fn configure_for_operation() {
     // We can re-enable them once we have a stable system
     unsafe {
         serial_println!("DEBUG: interrupts::configure_for_operation - Masking ALL interrupts for stability");
-        pic::PIC_CONTROLLER.configure_irqs(0b11111111, 0b11111111); // All masked
+        pic::PIC_CONTROLLER.lock().configure_irqs(0b11111111, 0b11111111); // All masked
     }
     serial_println!("DEBUG: interrupts::configure_for_operation - End (all IRQs masked)");
+}
+
+/// Initialize the IDT
+pub fn init_idt() {
+    serial_println!("DEBUG: Initializing IDT");
+    IDT.load();
+    serial_println!("DEBUG: IDT loaded successfully");
 }
 
 // --- Exception Handlers ---
@@ -144,15 +162,16 @@ extern "x86-interrupt" fn page_fault_handler(
 
 // PIC Timer interrupt handler
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // Ultra-minimal handler as a last resort
+    // Increment timer counter
+    TIMER_COUNT.fetch_add(1, Ordering::SeqCst);
+    
+    // Send EOI to PIC
     unsafe {
-        // 1. Directly write EOI to master PIC command port
-        let master_cmd_port: *mut u8 = 0x20 as *mut u8;
-        *master_cmd_port = 0x20; // EOI command directly to PIC
-        
-        // 2. No other operations that could potentially fail
-        // Note: We're deliberately avoiding using the more complex EOI methods
-        //       since they might be the source of the issue
+        // Send EOI to both PICs to be safe
+        let pic2_cmd: *mut u8 = 0xA0 as *mut u8;
+        let pic1_cmd: *mut u8 = 0x20 as *mut u8;
+        *pic2_cmd = 0x20; // EOI to slave PIC
+        *pic1_cmd = 0x20; // EOI to master PIC
     }
 }
 

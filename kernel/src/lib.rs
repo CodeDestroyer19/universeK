@@ -156,19 +156,37 @@ pub fn init(boot_info: &'static BootInfo) {
     // Enable CPU interrupts - this allows the configured device IRQs to be processed
     serial_println!("DEBUG: About to enable CPU interrupts");
     
-    // First, make sure all interrupts are masked to be safe
+    // Initialize PIC and configure interrupts
     unsafe {
-        // This only sets the masks - it doesn't re-initialize the PICs
-        interrupts::pic::PIC_CONTROLLER.configure_irqs(0b11111111, 0b11111111);
+        // First disable CPU interrupts during initialization
+        x86_64::instructions::interrupts::disable();
+        serial_println!("DEBUG: CPU interrupts disabled during initialization");
+        
+        // Initialize PICs with all interrupts masked
+        interrupts::pic::PIC_CONTROLLER.lock().initialize();
+        serial_println!("DEBUG: PIC initialization complete");
+        
+        // Configure specific interrupts we want to handle
+        // Only enable timer (IRQ0) initially
+        interrupts::pic::PIC_CONTROLLER.lock().configure_irqs(0b11111110u8, 0b11111111u8);
+        serial_println!("DEBUG: IRQs configured - Timer only enabled");
+        
+        // Make sure IDT is properly set up
+        serial_println!("DEBUG: Verifying IDT setup");
+        interrupts::init_idt();
+        serial_println!("DEBUG: IDT setup verified");
+        
+        // Now enable CPU interrupts
+        serial_println!("DEBUG: Enabling CPU interrupts");
+        // x86_64::instructions::interrupts::enable();
+        serial_println!("DEBUG: CPU interrupts enabled");
+        
+        // Add a small delay to let any pending interrupts clear
+        for _ in 0..1000 {
+            x86_64::instructions::nop();
+        }
+        serial_println!("DEBUG: Initial delay complete");
     }
-    
-    // Simplest possible approach - just enable CPU interrupts without unmasking any IRQs
-    x86_64::instructions::interrupts::enable();
-    serial_println!("DEBUG: CPU interrupts enabled (but all IRQs still masked)");
-    
-    // Now we'll skip interrupt handling entirely for now to get the system working
-    serial_println!("DEBUG: Leaving all IRQs masked for stability - no keyboard/timer interrupts");
-    serial_println!("DEBUG: Continuing with GUI initialization");
 
     // Start the GUI (which includes shell window)
     serial_println!("DEBUG: Starting GUI");
